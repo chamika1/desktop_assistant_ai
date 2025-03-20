@@ -13,25 +13,270 @@ import screen_brightness_control as sbc
 from datetime import datetime
 import win32com.client
 import winreg
+import json
+import random
+from pathlib import Path
+from collections import deque
+from threading import Thread, Event
+
+# Initialize data storage
+DATA_DIR = Path.home() / "voice_assistant_data"
+DATA_DIR.mkdir(exist_ok=True)
+PLAYLISTS_FILE = DATA_DIR / "playlists.json"
+FAVORITES_FILE = DATA_DIR / "favorites.json"
+HISTORY_FILE = DATA_DIR / "history.json"
+
+# Music queue and playback state
+music_queue = deque()
+current_playlist = None
+is_playing = False
+playback_thread = None
+stop_playback = Event()
+
+# Command aliases and shortcuts
+COMMAND_ALIASES = {
+    "play": ["start", "listen to", "put on", "begin", "resume", "unpause"],
+    "stop": ["pause", "halt", "end", "freeze", "stop playing", "stop music", "stop video"],
+    "next": ["skip", "forward", "next song", "next video", "skip this", "play next", "go next"],
+    "previous": ["back", "prev", "last song", "previous song", "go back", "play previous", "rewind"],
+    "volume up": ["louder", "increase volume", "turn it up", "volume higher", "raise volume", "make it louder"],
+    "volume down": ["quieter", "decrease volume", "turn it down", "volume lower", "lower volume", "make it quieter"],
+    "add to favorites": ["like", "favorite", "save song", "bookmark", "save this", "add to liked"],
+    "create playlist": ["new playlist", "make playlist", "start playlist", "create new playlist"],
+    "add to queue": ["queue", "add next", "play next", "queue up", "add to playlist", "line up"],
+    "what's playing": ["what song", "current song", "now playing", "what's this song", "what is playing", "show current"],
+    "clear queue": ["empty queue", "stop queue", "clear playlist", "remove all", "empty playlist"],
+    "open": ["launch", "start", "run", "execute", "show"],
+    "close": ["exit", "quit", "terminate", "shut down", "end program"],
+    "search": ["find", "look for", "locate", "search for", "show me"],
+}
+
+# App name aliases
+APP_ALIASES = {
+    "notepad": ["note", "notes", "text editor", "editor", "notepad++"],
+    "calculator": ["calc", "calculator app", "math", "compute"],
+    "settings": ["system settings", "windows settings", "preferences", "control panel"],
+    "file explorer": ["explorer", "files", "file manager", "my computer", "this pc"],
+    "task manager": ["processes", "tasks", "system monitor", "performance"],
+    "browser": ["chrome", "edge", "firefox", "internet", "web browser"],
+    "paint": ["mspaint", "drawing", "image editor", "microsoft paint"],
+    "word": ["microsoft word", "word processor", "winword", "office word"],
+    "excel": ["microsoft excel", "spreadsheet", "office excel"],
+    "mail": ["email", "outlook", "mail app", "electronic mail"],
+    "photos": ["gallery", "images", "pictures", "photo viewer"],
+    "camera": ["webcam", "camera app", "video camera"],
+    "store": ["microsoft store", "app store", "windows store", "store app"],
+    "terminal": ["command prompt", "cmd", "powershell", "console", "shell"],
+    "clock": ["time", "alarms", "timer", "stopwatch"],
+    "calendar": ["schedule", "appointments", "events", "planner"],
+    "maps": ["microsoft maps", "windows maps", "navigation", "directions"],
+    "weather": ["forecast", "temperature", "weather app", "climate"],
+    "spotify": ["spotify app", "spotify player", "music player"],
+    "vlc": ["vlc player", "media player", "video player"],
+    "discord": ["discord app", "discord chat", "discord voice"],
+    "zoom": ["zoom app", "zoom meeting", "zoom calls"],
+    "skype": ["skype app", "skype calls", "microsoft skype"],
+}
+
+def load_data(file_path):
+    if file_path.exists():
+        with open(file_path, 'r') as f:
+            return json.load(f)
+    return {}
+
+def save_data(data, file_path):
+    with open(file_path, 'w') as f:
+        json.dump(data, f, indent=4)
+
+# Load existing data
+playlists = load_data(PLAYLISTS_FILE)
+favorites = load_data(FAVORITES_FILE)
+history = load_data(HISTORY_FILE)
+
+def add_to_history(song):
+    """Add song to playback history"""
+    if "playback_history" not in history:
+        history["playback_history"] = []
+    history["playback_history"].insert(0, {"song": song, "timestamp": datetime.now().isoformat()})
+    if len(history["playback_history"]) > 100:  # Keep last 100 songs
+        history["playback_history"].pop()
+    save_data(history, HISTORY_FILE)
+
+def add_to_queue(songs, clear_existing=False):
+    """Add songs to the playback queue"""
+    global music_queue
+    if clear_existing:
+        music_queue.clear()
+    if isinstance(songs, str):
+        music_queue.append(songs)
+    else:
+        music_queue.extend(songs)
+    
+    if not is_playing:
+        start_playlist_playback()
+
+def start_playlist_playback():
+    """Start playing songs from the queue"""
+    global is_playing, playback_thread, stop_playback
+    
+    if is_playing:
+        return
+    
+    stop_playback.clear()
+    is_playing = True
+    
+    def playback_worker():
+        while not stop_playback.is_set() and music_queue:
+            song = music_queue.popleft()
+            add_to_history(song)
+            play_youtube_video(song, auto_next=True)
+            time.sleep(5)  # Wait between songs
+        
+        global is_playing
+        is_playing = False
+    
+    playback_thread = Thread(target=playback_worker, daemon=True)
+    playback_thread.start()
+
+def stop_playlist_playback():
+    """Stop the current playlist playback"""
+    global is_playing, stop_playback
+    stop_playback.set()
+    is_playing = False
+    music_queue.clear()
+    control_youtube("stop")
+
+def manage_music_library(command):
+    global playlists, favorites, current_playlist
+    try:
+        if "create playlist" in command:
+            playlist_name = command.replace("create playlist", "").strip()
+            if playlist_name:
+                playlists[playlist_name] = []
+                save_data(playlists, PLAYLISTS_FILE)
+                speak(f"Created playlist {playlist_name}")
+                
+        elif "add to playlist" in command:
+            parts = command.replace("add to playlist", "").strip().split(" ", 1)
+            if len(parts) == 2:
+                playlist_name, song = parts
+                if playlist_name in playlists:
+                    playlists[playlist_name].append(song)
+                    save_data(playlists, PLAYLISTS_FILE)
+                    speak(f"Added {song} to playlist {playlist_name}")
+                else:
+                    speak(f"Playlist {playlist_name} not found")
+                    
+        elif "play playlist" in command:
+            playlist_name = command.replace("play playlist", "").strip()
+            if playlist_name in playlists and playlists[playlist_name]:
+                current_playlist = playlist_name
+                speak(f"Playing playlist {playlist_name}")
+                add_to_queue(playlists[playlist_name], clear_existing=True)
+            else:
+                speak(f"Playlist {playlist_name} is empty or not found")
+                
+        elif "shuffle playlist" in command:
+            playlist_name = command.replace("shuffle playlist", "").strip()
+            if playlist_name in playlists and playlists[playlist_name]:
+                current_playlist = playlist_name
+                songs = playlists[playlist_name].copy()
+                random.shuffle(songs)
+                speak(f"Shuffling playlist {playlist_name}")
+                add_to_queue(songs, clear_existing=True)
+                
+        elif "add to favorites" in command:
+            song = command.replace("add to favorites", "").strip()
+            if song:
+                if "favorites" not in playlists:
+                    playlists["favorites"] = []
+                if song not in playlists["favorites"]:
+                    playlists["favorites"].append(song)
+                    save_data(playlists, PLAYLISTS_FILE)
+                    speak(f"Added {song} to favorites")
+                    
+        elif "play favorites" in command:
+            if "favorites" in playlists and playlists["favorites"]:
+                current_playlist = "favorites"
+                speak("Playing your favorite songs")
+                add_to_queue(playlists["favorites"], clear_existing=True)
+            else:
+                speak("Your favorites playlist is empty")
+                
+        elif "add to queue" in command:
+            song = command.replace("add to queue", "").strip()
+            if song:
+                add_to_queue(song)
+                speak(f"Added {song} to queue")
+                
+        elif "clear queue" in command:
+            stop_playlist_playback()
+            speak("Cleared the playback queue")
+            
+        elif "what's playing" in command or "current song" in command:
+            if is_playing and history["playback_history"]:
+                current = history["playback_history"][0]["song"]
+                speak(f"Currently playing {current}")
+            else:
+                speak("Nothing is playing right now")
+                
+        elif "play history" in command:
+            if history.get("playback_history"):
+                songs = [entry["song"] for entry in history["playback_history"][:10]]  # Last 10 songs
+                speak("Playing your recently played songs")
+                add_to_queue(songs, clear_existing=True)
+            else:
+                speak("No playback history found")
+                
+    except Exception as e:
+        print(f"Error in music library management: {str(e)}")
+        speak("Sorry, I had trouble managing the music library")
+    
+    return None
 
 pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
 def control_youtube(action):
     try:
-        if action == "stop":
-            # Press spacebar to pause/stop
-            pyautogui.press('space')
+        # First, ensure focus is on the YouTube window
+        youtube_window = None
+        for window in gw.getAllWindows():
+            if "youtube" in window.title.lower():
+                window.activate()
+                youtube_window = window
+                time.sleep(0.5)  # Wait for window activation
+                break
+        
+        if action == "stop" or action == "pause":
+            # More reliable pause using 'k' key (YouTube's official shortcut)
+            pyautogui.press('k')
+            time.sleep(0.2)
             speak("Stopping playback")
+        elif action == "play" or action == "resume":
+            # Resume playback using 'k' key if video is paused
+            pyautogui.press('k')
+            time.sleep(0.2)
+            speak("Resuming playback")
         elif action == "next":
-            # Press 'n' key for next video
-            pyautogui.press('n')
+            # Use 'l' key to seek forward then 'SHIFT+N' for next video
+            pyautogui.press('l')  # Seek forward first
+            time.sleep(0.2)
+            pyautogui.hotkey('shift', 'n')
+            time.sleep(0.5)
             speak("Playing next video")
         elif action == "previous":
-            # Press 'p' key for previous video
-            pyautogui.press('p')
+            # Use 'SHIFT+P' for previous video
+            pyautogui.hotkey('shift', 'p')
+            time.sleep(0.5)
             speak("Playing previous video")
+            
+        # Move mouse away to prevent overlay
+        if youtube_window:
+            pyautogui.moveTo(youtube_window.left + 10, youtube_window.top + 10)
+            
     except Exception as e:
         print(f"Error controlling playback: {str(e)}")
+        speak("Sorry, I couldn't control the playback")
 
 def search_edge(query):
     try:
@@ -243,6 +488,69 @@ def manage_calendar(command):
         print(f"Error in calendar management: {str(e)}")
 
 def get_app_path(app_name):
+    # System apps and settings dictionary
+    system_apps = {
+        "settings": "ms-settings:",
+        "control panel": "control",
+        "calculator": "calc",
+        "notepad": "notepad",
+        "paint": "mspaint",
+        "task manager": "taskmgr",
+        "system information": "msinfo32",
+        "disk cleanup": "cleanmgr",
+        "character map": "charmap",
+        "sound settings": "mmsys.cpl",
+        "device manager": "devmgmt.msc",
+        "disk management": "diskmgmt.msc",
+        "services": "services.msc",
+        "registry editor": "regedit",
+        "group policy": "gpedit.msc",
+        "remote desktop": "mstsc",
+        "performance monitor": "perfmon",
+        "resource monitor": "resmon",
+        "system properties": "sysdm.cpl",
+        "network connections": "ncpa.cpl",
+        "power settings": "powercfg.cpl",
+        "date and time": "timedate.cpl",
+        "region settings": "intl.cpl",
+        "user accounts": "netplwiz",
+        "windows security": "windowsdefender:",
+        "bluetooth settings": "ms-settings:bluetooth",
+        "wifi settings": "ms-settings:network-wifi",
+        "display settings": "ms-settings:display",
+        "personalization": "ms-settings:personalization",
+        "apps settings": "ms-settings:appsfeatures",
+        "update settings": "ms-settings:windowsupdate",
+        # Add common variations
+        "calc": "calc",
+        "calculator": "calc",
+        "note": "notepad",
+        "notes": "notepad",
+        "wordpad": "write",
+        "cmd": "cmd.exe",
+        "command prompt": "cmd.exe",
+        "terminal": "cmd.exe",
+        "powershell": "powershell.exe",
+        "photos": "ms-photos:",
+        "camera": "microsoft.windows.camera:",
+        "maps": "ms-windows-store:PDP?PFN=Microsoft.WindowsMaps",
+        "clock": "ms-clock:",
+        "alarms": "ms-clock:",
+        "mail": "outlookmail:",
+        "email": "outlookmail:",
+        "store": "ms-windows-store:",
+        "microsoft store": "ms-windows-store:"
+    }
+
+    # Convert input to lowercase for case-insensitive matching
+    app_name_lower = app_name.lower()
+    
+    # Check if it's a system app (case-insensitive)
+    for key, value in system_apps.items():
+        if app_name_lower == key.lower():
+            return value
+    
+    # Check common paths (case-sensitive for paths)
     common_paths = {
         "telegram": [
             r"%USERPROFILE%\AppData\Roaming\Telegram Desktop\Telegram.exe",
@@ -264,13 +572,15 @@ def get_app_path(app_name):
         ]
     }
     
-    if app_name in common_paths:
-        for path in common_paths[app_name]:
-            expanded_path = os.path.expandvars(path)  # Expand environment variables
-            if os.path.exists(expanded_path):
-                return f'"{expanded_path}"'
+    # Check common paths (case-insensitive for app names)
+    for key, paths in common_paths.items():
+        if app_name_lower == key.lower():
+            for path in paths:
+                expanded_path = os.path.expandvars(path)
+                if os.path.exists(expanded_path):
+                    return f'"{expanded_path}"'
     
-    # If no path found, try Windows Registry for installed apps
+    # Try Windows Registry for other installed apps
     try:
         with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\{}.exe".format(app_name)) as key:
             path = winreg.QueryValue(key, None)
@@ -279,12 +589,133 @@ def get_app_path(app_name):
     except:
         pass
     
-    app_path = None
-    if not app_path:
-        speak(f"Hey, I can't seem to find {app_name}. Is it installed?")
-    return app_path
+    return None
+
+def play_youtube_video(search_term, retry_count=0, auto_next=False):
+    """Enhanced YouTube video playback with retry mechanism"""
+    try:
+        # Use YouTube Music for better music playback if it's a song
+        if any(word in search_term.lower() for word in ["song", "music", "audio"]):
+            url = f"https://music.youtube.com/search?q={search_term}"
+        else:
+            # Add filters for better results: HD videos with good view count
+            filters = "&sp=EgIQAXABUAFwAQ%253D%253D"  # HD + Most viewed
+            url = f"https://www.youtube.com/results?search_query={search_term}{filters}"
+        
+        webbrowser.open(url)
+        speak(f"Searching for {search_term}")
+        
+        # Wait for page to load with exponential backoff
+        wait_time = 3 * (1.5 ** retry_count)  # Increases wait time with each retry
+        time.sleep(wait_time)
+        
+        try:
+            # Try multiple positions for more reliable clicking
+            click_positions = [
+                (400, 300),  # Default first video
+                (400, 400),  # Second video
+                (400, 200)   # Header video
+            ]
+            
+            success = False
+            for pos_x, pos_y in click_positions:
+                try:
+                    pyautogui.moveTo(pos_x, pos_y, duration=0.5)
+                    # Check if cursor is over a video (look for hover effects)
+                    time.sleep(0.5)
+                    pyautogui.click()
+                    success = True
+                    break
+                except:
+                    continue
+            
+            if not success and retry_count < 2:
+                # Retry with increased wait time
+                return play_youtube_video(search_term, retry_count + 1, auto_next)
+            elif success:
+                speak(f"Playing {search_term}")
+                if auto_next:
+                    time.sleep(5)  # Wait between songs
+                    return play_youtube_video(search_term, 0, auto_next)
+            else:
+                speak("Please select the video you want to play")
+                
+        except Exception as e:
+            print(f"Error selecting video: {str(e)}")
+            if retry_count < 2:
+                return play_youtube_video(search_term, retry_count + 1, auto_next)
+            else:
+                speak("I found some videos but couldn't select automatically. Please click the one you want.")
+    except Exception as e:
+        print(f"Error in YouTube playback: {str(e)}")
+        speak("Sorry, I had trouble playing that. Please try again.")
+
+def normalize_command(command):
+    """Convert various command phrasings to standard format"""
+    command = command.lower().strip()
+    
+    # Check for command aliases
+    for standard, alias_list in COMMAND_ALIASES.items():
+        for alias in alias_list:
+            if alias in command:
+                command = command.replace(alias, standard)
+                break
+    
+    # Check for app aliases if it's an open/close command
+    if "open" in command or "close" in command:
+        for app, aliases in APP_ALIASES.items():
+            for alias in aliases:
+                if alias in command:
+                    # Replace the alias with the standard app name
+                    command = command.replace(alias, app)
+                    break
+    
+    # Smart command processing
+    if "youtube" in command:
+        command = command.replace("youtube", "").strip()
+    if "please" in command:
+        command = command.replace("please", "").strip()
+    
+    # Handle number words
+    number_words = {
+        "one": "1", "two": "2", "three": "3", "four": "4", "five": "5",
+        "six": "6", "seven": "7", "eight": "8", "nine": "9", "ten": "10"
+    }
+    for word, num in number_words.items():
+        if word in command:
+            command = command.replace(word, num)
+    
+    return command
 
 def process_command(command):
+    # Normalize command first
+    command = normalize_command(command)
+    
+    # Quick commands (shortcuts)
+    quick_commands = {
+        "p": "pause",
+        "n": "next",
+        "b": "previous",
+        "+": "volume up",
+        "-": "volume down",
+        "q": "add to queue",
+        "f": "add to favorites"
+    }
+    
+    if command in quick_commands:
+        command = quick_commands[command]
+    
+    # Handle Windows Settings
+    if any(phrase in command.lower() for phrase in ["open settings", "show settings", "launch settings"]):
+        try:
+            os.system("start ms-settings:")
+            speak("Opening Windows Settings")
+            return
+        except Exception as e:
+            print(f"Error opening settings: {str(e)}")
+            speak("Sorry, I couldn't open Windows Settings")
+            return
+
     # Clear conversation history
     if any(phrase in command.lower() for phrase in ["clear memory", "forget conversation", "start new conversation"]):
         clear_conversation()
@@ -342,9 +773,12 @@ def process_command(command):
             return
 
     # Handle YouTube playback controls
-    if any(word in command.lower() for word in ["stop", "pause", "next", "previous"]):
+    if any(word in command.lower() for word in ["stop", "pause", "play", "resume", "next", "previous"]):
         if "stop" in command.lower() or "pause" in command.lower():
             control_youtube("stop")
+            return
+        elif "play" in command.lower() or "resume" in command.lower():
+            control_youtube("play")
             return
         elif "next" in command.lower():
             control_youtube("next")
@@ -360,6 +794,12 @@ def process_command(command):
             webbrowser.open("https://www.youtube.com")
             return
         
+        # Check if it's a playlist command first
+        playlist_song = manage_music_library(command)
+        if playlist_song:
+            play_youtube_video(playlist_song)
+            return
+        
         # For play commands
         search_term = command.lower()
         search_term = search_term.replace("play", "")
@@ -369,25 +809,7 @@ def process_command(command):
         search_term = search_term.strip()
         
         if search_term:
-            webbrowser.open(f"https://www.youtube.com/results?search_query={search_term}")
-            speak(f"Searching for {search_term}")
-            
-            # Wait longer for page to load and add safety checks
-            time.sleep(5)  # Increased wait time
-            try:
-                # Move mouse slowly to avoid triggering failsafe
-                pyautogui.moveTo(400, 300, duration=1)
-                pyautogui.click()
-                
-                # Wait for video page to load
-                time.sleep(2)
-                
-                # Click play button if needed
-                pyautogui.press('k')  # YouTube's play/pause shortcut
-                speak(f"Playing {search_term} on YouTube")
-            except Exception as e:
-                print(f"Error playing video: {str(e)}")
-                speak("I found the video but couldn't play it automatically. Please click it manually.")
+            play_youtube_video(search_term)
         return
 
     # Handle application opening commands
@@ -400,8 +822,16 @@ def process_command(command):
             else:
                 app_path = get_app_path(app_name)
                 if app_path:
-                    subprocess.Popen(app_path)
-                    speak(f"There you go, opened {app_name} for you")
+                    if app_path.startswith('"'):
+                        # For executable paths
+                        subprocess.Popen(app_path)
+                    elif app_path.startswith("ms-settings:"):
+                        # For Windows Settings URLs
+                        os.system(f"start {app_path}")
+                    else:
+                        # For system commands
+                        os.system(app_path)
+                    speak(f"Opening {app_name}")
                 else:
                     speak(f"I couldn't find {app_name}. Mind checking if it's installed?")
             return
@@ -454,6 +884,11 @@ def process_command(command):
     # Calendar and Tasks
     if any(word in command for word in ["create event", "set reminder", "check appointments"]):
         manage_calendar(command)
+        return
+
+    # Music Library
+    if any(word in command for word in ["create playlist", "add to playlist", "play playlist", "shuffle playlist", "add to favorites", "play favorites", "add to queue", "clear queue", "what's playing", "play history"]):
+        manage_music_library(command)
         return
 
     # For all other commands, use AI response
