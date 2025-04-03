@@ -1,0 +1,89 @@
+Voice Assistant Commands List
+===========================
+
+Music & Video Commands:
+---------------------
+- "song [song name]" or "play song [song name]" - Play a song on YouTube
+- "stop" or "pause" - Pause current playback
+- "play" or "resume" - Resume playback
+- "next" or "skip" - Play next video
+- "previous" or "back" - Play previous video
+- "volume up" or "louder" - Increase volume
+- "volume down" or "quieter" - Decrease volume
+- "mute" - Mute audio
+
+Playlist Commands:
+----------------
+- "create playlist [name]" - Create a new playlist
+- "add to playlist [playlist] [song]" - Add song to playlist
+- "play playlist [name]" - Play a specific playlist
+- "shuffle playlist [name]" - Shuffle and play playlist
+- "add to favorites" - Add current song to favorites
+- "play favorites" - Play your favorite songs
+- "add to queue [song]" - Add song to queue
+- "clear queue" - Clear the playback queue
+- "what's playing" - Show current song
+- "play history" - Play recently played songs
+
+System Controls:
+--------------
+- "volume up/down" - Adjust system volume
+- "brightness up/down" - Adjust screen brightness
+- "wifi on/off" - Toggle WiFi
+- "bluetooth on/off" - Toggle Bluetooth
+- "shutdown" - Shutdown computer
+- "restart" - Restart computer
+- "sleep" - Put computer to sleep
+
+Application Commands:
+------------------
+- "open [app name]" - Open an application
+- "close [app name]" - Close an application
+- "close all" - Close common applications
+
+Quick Shortcuts:
+--------------
+p - pause
+n - next
+b - previous
++ - volume up
+- - volume down
+q - add to queue
+f - add to favorites
+
+Search Commands:
+--------------
+- "search [query]" - Search in Edge browser
+- "search file [name]" - Search for a file
+- "shop for [item]" - Search shopping sites
+
+Streaming Commands:
+----------------
+- "watch [title] on netflix" - Play on Netflix
+- "watch [title] on prime" - Play on Prime Video
+- "watch [title] on disney" - Play on Disney+
+
+System Analysis:
+--------------
+- "what do you see" - Analyze screen
+- "what's on my screen" - Screen analysis
+- "what's open" - List open applications
+- "analyze screen" - Detailed screen analysis
+
+Calendar & Tasks:
+---------------
+- "create event [details]" - Create calendar event
+- "check appointments" - List today's appointments
+
+File Management:
+--------------
+- "create folder [name]" - Create new folder
+- "delete [path]" - Delete file or folder
+
+Settings & Utilities:
+------------------
+- "open settings" - Open Windows Settings
+- "clear memory" - Clear conversation history
+- "start new conversation" - Reset assistant memory
+
+Note: Commands can be phrased naturally. For example, "turn up the volume" works the same as "volume up". 

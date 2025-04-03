@@ -18,6 +18,8 @@ import random
 from pathlib import Path
 from collections import deque
 from threading import Thread, Event
+from music_player import play_song
+import urllib.parse
 
 # Initialize data storage
 DATA_DIR = Path.home() / "voice_assistant_data"
@@ -358,17 +360,18 @@ def play_on_streaming(service, title=None):
         print(f"Error with streaming service: {str(e)}")
 
 def analyze_screen():
+    """Analyze screen content with proper error handling"""
     try:
-        # Capture the entire screen
+        # Add a small delay to ensure window focus
+        time.sleep(0.5)
+        
+        # Capture the screen
         screenshot = ImageGrab.grab()
         screenshot_np = np.array(screenshot)
         
         # Get list of all open windows
         windows = gw.getAllWindows()
         active_window = gw.getActiveWindow()
-        
-        # Extract text from screen using OCR
-        screen_text = pytesseract.image_to_string(screenshot_np)
         
         # Prepare screen analysis report
         report = "I can see:\n"
@@ -383,15 +386,21 @@ def analyze_screen():
             if window.visible:
                 report += f"- {window.title}\n"
         
-        # Add any visible text from screen
-        if screen_text:
-            report += "\nVisible text on screen:\n"
-            report += screen_text
+        # Try OCR only if Tesseract is available
+        try:
+            screen_text = pytesseract.image_to_string(screenshot_np)
+            if screen_text.strip():
+                report += "\nVisible text on screen:\n"
+                report += screen_text
+        except Exception as e:
+            print(f"OCR error: {str(e)}")
+            report += "\nCouldn't read text from screen"
         
         return report
+        
     except Exception as e:
-        print(f"Error analyzing screen: {str(e)}")
-        return "I'm having trouble analyzing the screen."
+        print(f"Screen analysis error: {str(e)}")
+        return "Sorry, I'm having trouble accessing the screen. Please check if I have screen capture permissions."
 
 def control_system(command):
     try:
@@ -654,11 +663,35 @@ def normalize_command(command):
     """Convert various command phrasings to standard format"""
     command = command.lower().strip()
     
+    # Remove common filler phrases
+    filler_phrases = [
+        "i said",
+        "i want",
+        "can you",
+        "please",
+        "hey",
+        "you",
+        "for me",
+        "the song"
+    ]
+    
+    for phrase in filler_phrases:
+        command = command.replace(phrase, "").strip()
+    
     # Check for command aliases
     for standard, alias_list in COMMAND_ALIASES.items():
         for alias in alias_list:
             if alias in command:
                 command = command.replace(alias, standard)
+                break
+    
+    # Smart command processing for music
+    if any(word in command for word in ["play", "song", "music"]):
+        # Extract just the song name
+        for prefix in ["play song", "play", "song"]:
+            if command.startswith(prefix):
+                command = command.replace(prefix, "", 1).strip()
+                command = f"song {command}"  # Normalize to standard format
                 break
     
     # Check for app aliases if it's an open/close command
@@ -673,8 +706,6 @@ def normalize_command(command):
     # Smart command processing
     if "youtube" in command:
         command = command.replace("youtube", "").strip()
-    if "please" in command:
-        command = command.replace("please", "").strip()
     
     # Handle number words
     number_words = {
@@ -687,10 +718,101 @@ def normalize_command(command):
     
     return command
 
+def find_video_on_screen(song_name):
+    """Find and click the correct video using screen analysis"""
+    try:
+        # Wait a bit longer for the page to fully load
+        time.sleep(2)
+        
+        # Capture the screen
+        screenshot = ImageGrab.grab()
+        screenshot_np = np.array(screenshot)
+        
+        # Get text from screen with better configuration
+        screen_text = pytesseract.image_to_string(
+            screenshot_np,
+            config='--psm 6'  # Assume uniform block of text
+        )
+        
+        print("Screen text found:", screen_text)  # Debug print
+        
+        # Find all YouTube video titles
+        video_entries = []
+        y_offset = 250  # Starting Y position for first video
+        y_increment = 100  # Typical spacing between videos
+        
+        lines = screen_text.split('\n')
+        for i, line in enumerate(lines):
+            line = line.strip()
+            if len(line) > 10:  # Ignore very short lines
+                y_pos = y_offset + (i * y_increment)
+                video_entries.append((line, y_pos))
+                print(f"Found video: {line} at y={y_pos}")
+        
+        # Find best match
+        best_match = None
+        best_y = None
+        song_name_lower = song_name.lower()
+        
+        for title, y_pos in video_entries:
+            if song_name_lower in title.lower():
+                best_match = title
+                best_y = y_pos
+                print(f"Found matching video: {title} at y={y_pos}")
+                break
+        
+        if best_match:
+            # Click sequence for better reliability
+            x_pos = 400  # X position for video titles
+            
+            # Single click sequence
+            pyautogui.moveTo(x_pos, best_y, duration=0.5)
+            time.sleep(0.5)
+            pyautogui.click()
+            
+            # Don't press k - let YouTube autoplay handle it
+            return True
+            
+        # Fallback to default position if no match found
+        else:
+            print("No exact match found, trying first video position")
+            pyautogui.moveTo(400, 250, duration=0.5)
+            time.sleep(0.5)
+            pyautogui.click()
+            return True
+            
+    except Exception as e:
+        print(f"Error in screen analysis: {str(e)}")
+        return False
+
 def process_command(command):
     # Normalize command first
     command = normalize_command(command)
     
+    # Handle song playback commands consistently
+    if ("play song" in command) or ("song" in command):
+        # Extract song name, handling both "play song X" and "song X" formats
+        song_name = command.replace("play song", "").replace("song", "").strip()
+        if song_name:
+            # Use regular YouTube for more reliable playback
+            search_query = urllib.parse.quote(song_name)
+            url = f"https://www.youtube.com/results?search_query={search_query}"
+            webbrowser.open(url)
+            speak(f"Searching for {song_name}")
+            
+            # Wait for page to load
+            time.sleep(3)
+            
+            # Try to find and click the correct video
+            if find_video_on_screen(song_name):
+                speak(f"Playing {song_name}")
+            else:
+                speak("I found some videos but couldn't select automatically. Please click the one you want.")
+            return
+        else:
+            speak("Please specify a song to play")
+            return
+            
     # Quick commands (shortcuts)
     quick_commands = {
         "p": "pause",
@@ -721,13 +843,18 @@ def process_command(command):
         clear_conversation()
         return
 
-    # Add screen analysis commands
+    # Screen analysis commands
     if any(phrase in command.lower() for phrase in [
         "what do you see", "what's on my screen", "what's open",
         "check my desktop", "analyze screen", "what applications are open"
     ]):
-        screen_info = analyze_screen()
-        speak(screen_info)
+        try:
+            screen_info = analyze_screen()
+            print("Screen Analysis Result:", screen_info)  # Debug print
+            speak(screen_info)
+        except Exception as e:
+            print(f"Error during screen analysis: {e}")
+            speak("I'm having trouble analyzing the screen")
         return
 
     # Handle streaming services
